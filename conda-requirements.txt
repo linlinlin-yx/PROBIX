@@ -1,0 +1,14 @@
+python=3.11
+pytorch
+transformers
+sentence-transformers
+nltk
+datasets
+openai
+pip:
+  openai
+  transformers[torch]
+  sentence-transformers
+  datasets
+  torch
+  nltk
