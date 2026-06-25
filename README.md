@@ -70,7 +70,7 @@ python run_predict.py \
 
 #### Note
 
-Since the API of `mistralai/Mistral-7B-Instruct-v0.3` is currently unavailable, you can instead download the model locally and provide its path via `--hf_local_path`.
+Since the API of `mistralai/Mistral-7B-Instruct-v0.3` is currently unavailable, you can instead download the [model](https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.3) locally and provide its path via `--hf_local_path`.
 
 Example:
 
