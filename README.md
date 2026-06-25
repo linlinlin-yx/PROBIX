@@ -1,15 +1,15 @@
-# README
+# PROBIX
 
 ## Overview
 
  This repository implements PROBIX, a probing-guided adversarial suffix attack designed to uncover vulnerabilities and assess the robustness of large language models (LLMs) across various NLP tasks.
 
+
 ## Features
 
-- **Probe-guided Adversarial Attack**: Leverages task-specific linear probes
-as surrogate predictors of model behavior, significantly reducing repeated queries to the target model.
+- **Probe-guided optimization**: Uses task-specific linear probes as surrogate predictors during adversarial suffix optimization.
 - **Optimization Strategy**: Employs a composite objective to balance adversarial effectiveness, semantic similarity, and linguistic fluency during adversarial text generation. It further incorporates a part-of-speech (POS)-aware perturbation strategy and an LLM-based paraphrasing refinement module to improve exploration and mitigate artifacts.
-- **Evaluation Metrics**: Computes Attack Success Rate (ASR), semantic similarity, and perplexity to assess both adversarial effectiveness and the quality of the generated adversarial text. It also reports the computational cost of adversarial example generation.
+- **Evaluation metrics**: Tracks attack success rate (ASR), semantic similarity, perplexity, and runtime statistics.
 
 ## Requirements
 
@@ -19,42 +19,73 @@ as surrogate predictors of model behavior, significantly reducing repeated queri
 - NLTK
 - SentenceTransformers
 
-## Set environments
-- `conda create --name new_env`
-- `conda env list`
-- `conda activate new_env`
+## Environment setup
 
-## Install dependencies:
+- `conda create --name probix_env`
+- `conda activate probix_env`
 - `conda install --file conda-requirements.txt`
 
+## Supported datasets
+
+- `sst2`
+- `AG-News`
+- `StrategyQA`
+
 ## Main interface
-- Supported `dataset_name` values: `sst2`, `AG-News`, `StrategyQA`
-- White-box setting: use `--transfer_mode off`
+
+`run_optim.py` performs the generation of adversarial examples and saves them to a JSONL file.
+
+Example:
 
 ```bash
 python run_optim.py \
   --model_name meta-llama/Meta-Llama-3-8B-Instruct \
   --dataset_name sst2 \
-  --num_examples 5 \
   --n_epochs 50 \
+  --similarity_threshold 0.5 \
   --suffix_len 5 \
+  --output_file adv_examples.jsonl
+```
+
+`run_predict.py` evaluates the attack success rate and quality of the saved examples.
+
+White-box example via openrouter:
+
+```bash
+python run_predict.py \
+  --input_file adv_examples.jsonl \
+  --output_file prediction_results.jsonl \
   --transfer_mode off
 ```
 
-- Transfer setting: use `--transfer_mode on` and also provide `--target_model`
+Transfer example:
 
 ```bash
-python run_optim.py \
-  --model_name meta-llama/Meta-Llama-3-8B-Instruct \
-  --dataset_name sst2 \
-  --num_examples 5 \
-  --n_epochs 50 \
-  --suffix_len 5 \
+python run_predict.py \
+  --input_file adv_examples.jsonl \
+  --output_file prediction_results.jsonl \
   --transfer_mode on \
-  --target_model gpt-4
+  --target_model openai:gpt-4o-mini
 ```
 
-- For custom target routes, `--target_model` also supports `openrouter:<model_id>`, `openai:<model_id>`, or `ollama:<local_tag>`.
+#### Note
 
-## Train probe for new task or new model
-- `python train_probe.py`
+Since the API of `mistralai/Mistral-7B-Instruct-v0.3` is currently unavailable, you can instead download the model locally and provide its path via `--hf_local_path`.
+
+Example:
+
+```bash
+python run_predict.py \
+  --input_file adv_examples.jsonl \
+  --output_file prediction_results.jsonl \
+  --model_name mistralai/Mistral-7B-Instruct-v0.3 \
+  --transfer_mode off \
+  --hf_local_path /path/to/Mistral-7B-Instruct-v0.3
+```
+
+
+## Train a probe
+
+```bash
+python train_probe.py
+```

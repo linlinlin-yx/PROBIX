@@ -7,16 +7,19 @@ from openai import OpenAI
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key)
 
-# In white-box mode, the target model defaults to the base model.
+_LOCAL_MISTRAL_MODEL = None
+_LOCAL_MISTRAL_TOKENIZER = None
+_LOCAL_MISTRAL_MODEL_PATH = None
+
 DEFAULT_PREDICTION_TARGETS = {
     "meta-llama/Meta-Llama-3-8B-Instruct": {"backend": "openrouter", "model": "meta-llama/llama-3.1-8b-instruct"},
-    "mistralai/Mistral-7B-Instruct-v0.3": {"backend": "ollama", "model": "mistral"},
+    "mistralai/Mistral-7B-Instruct-v0.3": {"backend": "openrouter", "model": "mistralai/mistral-7b-instruct-v0.3"},
     "gpt4": {"backend": "openai", "model": "gpt-4"},
     "gpt-4": {"backend": "openai", "model": "gpt-4"},
 }
 
 
-def resolve_prediction_target(base_model, transfer_mode="off", target_model=None):
+def resolve_prediction_target(base_model, transfer_mode="off", target_model=None, hf_local_path=None):
     if transfer_mode not in {"on", "off"}:
         raise ValueError(f"Unsupported transfer_mode: {transfer_mode}")
 
@@ -26,6 +29,14 @@ def resolve_prediction_target(base_model, transfer_mode="off", target_model=None
         requested_model = target_model
     else:
         requested_model = target_model or base_model
+        if hf_local_path is not None:
+            if requested_model != "mistralai/Mistral-7B-Instruct-v0.3":
+                raise ValueError("`--hf_local_path` is only supported for `mistralai/Mistral-7B-Instruct-v0.3`.")
+            return {
+                "backend": "local_mistral",
+                "model": hf_local_path,
+                "requested_model": requested_model,
+            }
 
     if requested_model in DEFAULT_PREDICTION_TARGETS:
         target = DEFAULT_PREDICTION_TARGETS[requested_model].copy()
@@ -34,59 +45,56 @@ def resolve_prediction_target(base_model, transfer_mode="off", target_model=None
 
     if ":" in requested_model:
         backend, routed_model = requested_model.split(":", 1)
-        if backend in {"openrouter", "openai", "ollama"} and routed_model:
+        if backend in {"openrouter", "openai"} and routed_model:
             return {
                 "backend": backend,
                 "model": routed_model,
                 "requested_model": requested_model,
             }
 
-    return {
-        "backend": "ollama",
-        "model": requested_model,
-        "requested_model": requested_model,
-    }
+    raise ValueError(
+        f"Unsupported target model `{requested_model}`. Use a known model name or an explicit `openrouter:<model_id>` / `openai:<model_id>` route."
+    )
 
 
-def ensure_prediction_target_available(base_model, transfer_mode="off", target_model=None):
-    target = resolve_prediction_target(base_model, transfer_mode=transfer_mode, target_model=target_model)
+def ensure_prediction_target_available(base_model, transfer_mode="off", target_model=None, hf_local_path=None):
+    target = resolve_prediction_target(
+        base_model,
+        transfer_mode=transfer_mode,
+        target_model=target_model,
+        hf_local_path=hf_local_path,
+    )
 
-    if target["backend"] == "ollama":
-        try:
-            response = requests.get("http://localhost:11434/api/tags", timeout=10)
-            response.raise_for_status()
-        except requests.RequestException as error:
-            raise RuntimeError(
-                "Ollama is required for this target route, but http://localhost:11434 is not reachable. "
-                f"Please start Ollama and make sure the `{target['model']}` model is available. Original error: {error}"
-            ) from error
-
-        data = response.json()
-        models = data.get("models", [])
-        available_names = {item.get("name", "") for item in models}
-        available_models = {item.get("model", "") for item in models}
-        acceptable_names = {
-            target["model"],
-            f"{target['model']}:latest",
-        }
-        if not ((available_names & acceptable_names) or (available_models & acceptable_names)):
-            pretty_available = ", ".join(sorted(name for name in available_names if name)) or "none"
-            raise RuntimeError(
-                f"Prediction target `{target['model']}` was not found in local Ollama. "
-                f"Available tags: {pretty_available}. Please run `ollama pull {target['model']}` or choose another `--target_model`."
-            )
-
-    elif target["backend"] == "openrouter" and not os.getenv("OPENROUTER_API_KEY"):
+    if target["backend"] == "openrouter" and not os.getenv("OPENROUTER_API_KEY"):
         raise RuntimeError("OPENROUTER_API_KEY is required for the selected OpenRouter target route.")
-    elif target["backend"] == "openai" and not os.getenv("OPENAI_API_KEY"):
+    if target["backend"] == "openai" and not os.getenv("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY is required for the selected OpenAI target route.")
+    if target["backend"] == "local_mistral":
+        if not os.path.exists(target["model"]):
+            raise RuntimeError(f"Local Mistral path `{target['model']}` does not exist.")
+        tokenizer_file = os.path.join(target["model"], "tokenizer.model.v3")
+        if not os.path.exists(tokenizer_file):
+            raise RuntimeError(
+                f"Could not find `{tokenizer_file}`. The local Mistral directory must include `tokenizer.model.v3`."
+            )
+        try:
+            load_local_mistral_model(target["model"])
+        except Exception as error:
+            raise RuntimeError(
+                f"Failed to load the local Mistral model from `{target['model']}`: {error}"
+            ) from error
 
     return target
 
 
 
-def get_prediction_call_model(base_model, text, dataset="AG-News", transfer_mode="off", target_model=None):
-    target = resolve_prediction_target(base_model, transfer_mode=transfer_mode, target_model=target_model)
+def get_prediction_call_model(base_model, text, dataset="AG-News", transfer_mode="off", target_model=None, hf_local_path=None):
+    target = resolve_prediction_target(
+        base_model,
+        transfer_mode=transfer_mode,
+        target_model=target_model,
+        hf_local_path=hf_local_path,
+    )
     print(
         f"prediction_target: requested={target['requested_model']} backend={target['backend']} model={target['model']} dataset={dataset}"
     )
@@ -104,36 +112,10 @@ def get_prediction_call_model(base_model, text, dataset="AG-News", transfer_mode
         return get_prediction_call_online_model(prompt, dataset, model=target["model"])
     if target["backend"] == "openrouter":
         return get_prediction_openrouter(prompt, dataset, model=target["model"])
-    if target["backend"] == "ollama":
-        return get_prediction_call_ollama_model(prompt, dataset, model=target["model"])
+    if target["backend"] == "local_mistral":
+        return get_prediction_call_local_mistral_model(prompt, dataset, model_path=target["model"])
 
     raise ValueError(f"Unsupported backend: {target['backend']}")
-
-
-def get_prediction_call_ollama_model(prompt, dataset, model, api_base="http://localhost:11434"):
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "temperature": 0.7,
-        "max_new_tokens": 5,
-    }
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        response = requests.post(f"{api_base}/api/generate", json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-
-        result = data.get("response", data.get("text", ""))
-        print(f"API raw Parsed Result: {result}")
-        return parse_label_from_response(result, dataset)
-    except requests.RequestException as error:
-        print(f"API call failed: {error}")
-        raise
-    except ValueError as error:
-        print(f"Failed to parse prediction: {error}")
-        raise
 
 
 def get_prediction_call_online_model(prompt, dataset="AG-News", model="gpt-4"):
@@ -197,6 +179,43 @@ def get_prediction_openrouter(prompt, dataset, model):
             print(f"Failed to parse prediction: {error}")
 
     return None
+
+
+def load_local_mistral_model(model_path):
+    global _LOCAL_MISTRAL_MODEL, _LOCAL_MISTRAL_TOKENIZER, _LOCAL_MISTRAL_MODEL_PATH
+    if _LOCAL_MISTRAL_MODEL is not None and _LOCAL_MISTRAL_MODEL_PATH == model_path:
+        return _LOCAL_MISTRAL_MODEL, _LOCAL_MISTRAL_TOKENIZER
+
+    from mistral_inference.transformer import Transformer
+    from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+
+    tokenizer = MistralTokenizer.from_file(os.path.join(model_path, "tokenizer.model.v3"))
+    model = Transformer.from_folder(model_path)
+
+    _LOCAL_MISTRAL_MODEL = model
+    _LOCAL_MISTRAL_TOKENIZER = tokenizer
+    _LOCAL_MISTRAL_MODEL_PATH = model_path
+    return _LOCAL_MISTRAL_MODEL, _LOCAL_MISTRAL_TOKENIZER
+
+
+def get_prediction_call_local_mistral_model(prompt, dataset, model_path):
+    from mistral_inference.generate import generate
+    from mistral_common.protocol.instruct.messages import UserMessage
+    from mistral_common.protocol.instruct.request import ChatCompletionRequest
+
+    model, tokenizer = load_local_mistral_model(model_path)
+    completion_request = ChatCompletionRequest(messages=[UserMessage(content=prompt)])
+    tokens = tokenizer.encode_chat_completion(completion_request).tokens
+    out_tokens, _ = generate(
+        [tokens],
+        model,
+        max_tokens=16,
+        temperature=0.0,
+        eos_id=tokenizer.instruct_tokenizer.tokenizer.eos_id,
+    )
+    result = tokenizer.instruct_tokenizer.tokenizer.decode(out_tokens[0]).strip()
+    print(f"Local Mistral raw Parsed Result: {result}")
+    return parse_label_from_response(result, dataset)
 
 
 def parse_label_from_response(result, dataset):
